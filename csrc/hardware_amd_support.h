@@ -15,12 +15,6 @@
 enum class AllocationState;
 struct AllocationMetadata;
 
-// Device utility functions for ROCm
-namespace DeviceUtils {
-    // Get global device ID from local device ID
-    int get_global_device_id(hipDevice_t local_device_id);
-}
-
 // High-level ROCm implementation functions
 namespace ROCmHIPImplementation {
     // Malloc implementation for ROCm
