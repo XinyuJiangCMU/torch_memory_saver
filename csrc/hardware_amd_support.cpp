@@ -7,43 +7,6 @@
 
 #pragma message "Using ROCm/HIP 6.x implementation (chunked allocation workaround)"
 
-namespace DeviceUtils {
-    int get_global_device_id(hipDevice_t local_device_id) {
-        // Check for HIP_VISIBLE_DEVICES environment variable
-        const char* hip_visible = std::getenv("HIP_VISIBLE_DEVICES");
-        
-        if (hip_visible && strlen(hip_visible) > 0) {
-            std::string devices_str(hip_visible);
-            std::stringstream ss(devices_str);
-            std::string device_str;
-            std::vector<int> device_list;
-            
-            // Parse comma-separated device list
-            while (std::getline(ss, device_str, ',')) {
-                if (!device_str.empty()) {
-                    device_list.push_back(std::atoi(device_str.c_str()));
-                }
-            }
-            
-            if (local_device_id < device_list.size()) {
-                int global_device_id = device_list[local_device_id];
-#ifdef TMS_DEBUG_LOG
-                std::cout << "[torch_memory_saver.cpp] HIP_VISIBLE_DEVICES=" << hip_visible 
-                        << " local_device_id=" << local_device_id 
-                        << " -> global_device_id=" << global_device_id << std::endl;
-#endif
-                return global_device_id;
-            }
-        }
-        
-        // Fallback: return local device ID as-is
-#ifdef TMS_DEBUG_LOG
-        std::cout << "[torch_memory_saver.cpp] No HIP_VISIBLE_DEVICES, using local_device_id=" << local_device_id << std::endl;
-#endif
-        return local_device_id;
-    }
-}
-
 // Internal helper functions
 namespace {
     void cu_mem_create_and_map(
@@ -154,27 +117,22 @@ namespace ROCmHIPImplementation {
         assert(aligned_size % MEMCREATE_CHUNK_SIZE == 0);
         assert(aligned_size % granularity == 0);
 
-        // Get global device ID and determine NUMA node
-        int global_device_id = DeviceUtils::get_global_device_id(device);
-        uint64_t node_id = 0;
-        if (global_device_id > 3) {
-            node_id = 1;
-        }
-
 #ifdef TMS_DEBUG_LOG
         std::cout << "[torch_memory_saver.cpp] TorchMemorySaver.cuda_malloc "
                   << " ptr=" << ptr << " raw_size=" << raw_size
                   << " granularity=" << granularity
                   << " aligned_size=" << aligned_size
-                  << " node_id=" << node_id
                   << " device=" << device
-                  << " global_device_id=" << global_device_id
                   << std::endl;
 #endif
 
-        // Reserve aligned memory address
+        // Reserve aligned memory address. The 5th arg of hipMemAddressReserve is
+        // `flags`, which is reserved and must be 0. The previous code passed a
+        // per-device node_id here (1 when the global device id is > 3), which HIP
+        // rejects with hipErrorInvalidValue — hipMemAddressReserve has no NUMA
+        // parameter, so device placement is expressed only via prop.location.
         hipDeviceptr_t d_mem;
-        CURESULT_CHECK(hipMemAddressReserve(&d_mem, aligned_size, granularity, 0, node_id));
+        CURESULT_CHECK(hipMemAddressReserve(&d_mem, aligned_size, granularity, 0, 0));
         *ptr = (void*)d_mem;
 
         // Create and map chunks
